@@ -21,7 +21,7 @@ LSTM_DIM = 25
 query_texts = []
 query_labels = []
 
-origin_train_data = "../data/query/model_data/{}/{}_train_binary.txt.bak".format(LANGUAGE_TYPE, LANGUAGE_TYPE)
+origin_train_data = "../data/query/model_data/{}/{}_train_binary.txt.full".format(LANGUAGE_TYPE, LANGUAGE_TYPE)
 if TASK_CLASS_NUMBER == 3:
     origin_train_data = "../data/query/model_data/{}/seg/{}_train_multi_seg.txt".format(LANGUAGE_TYPE, LANGUAGE_TYPE)
 with open(origin_train_data, "r") as file:
@@ -296,12 +296,16 @@ def TextCNN_model_2(x_train, x_train_char, y_train, x_val, x_val_char, y_val, em
     print(embed_char.shape)
     print(embed_char[0].shape)
 
-    char_lstm_output, _, _, _, _ = char_lstm_layer(embed_char[0])
+    char_lstm_output, _, cell_1, _, cell_2 = char_lstm_layer(embed_char[0])
     print(char_lstm_layer.output_shape)
     print(char_lstm_output.shape)
 
     char_lstm_output = tf.keras.layers.Lambda(backend_reshape)(char_lstm_output)
-    embed = tf.keras.layers.concatenate([embed, char_lstm_output], axis=-1)
+
+    cell_lstm_output = tf.keras.layers.concatenate([cell_1, cell_2], axis=-1)
+    cell_lstm_output = tf.keras.layers.Lambda(backend_reshape)(cell_lstm_output)
+
+    embed = tf.keras.layers.concatenate([embed, char_lstm_output, cell_lstm_output], axis=-1)
     embed = tf.keras.layers.Dropout(0.3)(embed)
 
     # 卷积核大小分别为2,3,4
@@ -334,7 +338,7 @@ def TextCNN_model_2(x_train, x_train_char, y_train, x_val, x_val_char, y_val, em
     weights = dict(enumerate(weights))
     print(weights)
     print(type(weights))
-    model.fit([x_train, x_train_char], y_train, validation_data=([x_val, x_val_char], y_val), epochs=10, batch_size=1)
+    model.fit([x_train, x_train_char], y_train, validation_data=([x_val, x_val_char], y_val), epochs=10, batch_size=1, class_weight=weights)
     model.save("model_result2/" + LANGUAGE_TYPE + "_textCNN/")
 
 def TextCNN_model_3(x_train, y_train, x_val, y_val, embedding_matrix):

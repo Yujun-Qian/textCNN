@@ -8,11 +8,13 @@ import random
 import math
 from imblearn.over_sampling import SMOTE
 from collections import Counter
+
 print(tf.config.list_physical_devices('GPU'))
 
 LANGUAGE_TYPE = "br"
 TASK_CLASS_NUMBER = 2  # 2代表二分类， 3 代表多分类
 MAX_SEQUENCE_LENGTH = 16
+MAX_WORD_LENGTH = 10
 POS_SAMPLE_WEIGHT = 1  # 正样本重复倍数
 EMBEDDING_CHAR_DIM = 25
 LSTM_DIM = 25
@@ -196,15 +198,15 @@ print(x_train_ori[0])
 print(x_test_ori[0])
 
 
-
-
 x_train_sequences = tokenizer.texts_to_sequences(x_train_ori)
 x_train = tf.keras.preprocessing.sequence.pad_sequences(x_train_sequences, maxlen=MAX_SEQUENCE_LENGTH, padding='pre')
 
 x_train_word_sequences = [text.split() for text in x_train_ori]
+print("x_train_word_sequences[0] is:")
+print(x_train_word_sequences[0])
 x_train_word_sequences = tf.keras.preprocessing.sequence.pad_sequences(x_train_word_sequences, dtype=object, maxlen=MAX_SEQUENCE_LENGTH, padding='pre', value='')
 x_train_char_sequences = [tokenizer_char.texts_to_sequences(word_seq) for word_seq in x_train_word_sequences]
-x_train_char_sequences = [tf.keras.preprocessing.sequence.pad_sequences(char_seq, maxlen=MAX_SEQUENCE_LENGTH, padding='pre') for char_seq in x_train_char_sequences]
+x_train_char_sequences = [tf.keras.preprocessing.sequence.pad_sequences(char_seq, maxlen=MAX_WORD_LENGTH, padding='pre') for char_seq in x_train_char_sequences]
 
 x_test_sequences = tokenizer.texts_to_sequences(x_test_ori)
 x_test = tf.keras.preprocessing.sequence.pad_sequences(x_test_sequences, maxlen=MAX_SEQUENCE_LENGTH, padding='pre')
@@ -212,7 +214,7 @@ x_test = tf.keras.preprocessing.sequence.pad_sequences(x_test_sequences, maxlen=
 x_test_word_sequences = [text.split() for text in x_test_ori]
 x_test_word_sequences = tf.keras.preprocessing.sequence.pad_sequences(x_test_word_sequences, dtype=object, maxlen=MAX_SEQUENCE_LENGTH, padding='pre', value='')
 x_test_char_sequences = [tokenizer_char.texts_to_sequences(word_seq) for word_seq in x_test_word_sequences]
-x_test_char_sequences = [tf.keras.preprocessing.sequence.pad_sequences(char_seq, maxlen=MAX_SEQUENCE_LENGTH, padding='pre') for char_seq in x_test_char_sequences]
+x_test_char_sequences = [tf.keras.preprocessing.sequence.pad_sequences(char_seq, maxlen=MAX_WORD_LENGTH, padding='pre') for char_seq in x_test_char_sequences]
 
 
 if TASK_CLASS_NUMBER == 2:
@@ -259,11 +261,22 @@ print(x_train[-10:-1])
 print(y_train[-10:-1])
 print(x_train_char_sequences[-2])
 
+def backend_reshape_input(x):
+    return tf.keras.backend.reshape(x, (-1, MAX_WORD_LENGTH, EMBEDDING_CHAR_DIM))
+
 def backend_reshape(x):
-    return tf.keras.backend.reshape(x, (1, MAX_SEQUENCE_LENGTH, LSTM_DIM * 2))
+    return tf.keras.backend.reshape(x, (-1, MAX_SEQUENCE_LENGTH, LSTM_DIM * 2))
+
+def switch_layer(inputs):
+    inp, emb = inputs
+    zeros = tf.zeros_like(inp, dtype = tf.float32)
+    ones = tf.ones_like(inp, dtype = tf.float32)
+    inp = tf.keras.backend.switch(inp > 0, ones, zeros)
+    inp = tf.expand_dims(inp, -1)
+    return inp * emb
 
 def TextCNN_model_2(x_train, x_train_char, y_train, x_val, x_val_char, y_val, embedding_matrix):
-    main_input = tf.keras.layers.Input(shape=(MAX_SEQUENCE_LENGTH,), dtype='int32', name='input-1', batch_size=1)
+    main_input = tf.keras.layers.Input(shape=(MAX_SEQUENCE_LENGTH,), dtype='int32', name='input-1')
     embedding_layer = tf.keras.layers.Embedding(len(word_index) + 1,
                             EMBEDDING_DIM,
                             weights=[embedding_matrix],
@@ -271,41 +284,52 @@ def TextCNN_model_2(x_train, x_train_char, y_train, x_val, x_val_char, y_val, em
                             trainable=False)
     embed = embedding_layer(main_input)
 
-    main_char_input = tf.keras.layers.Input(shape=(MAX_SEQUENCE_LENGTH, MAX_SEQUENCE_LENGTH), dtype='int32', name='input-2', batch_size=1)
+    main_char_input = tf.keras.layers.Input(shape=(MAX_SEQUENCE_LENGTH, MAX_WORD_LENGTH), dtype='int32', name='input-2')
     embedding_char_layer = tf.keras.layers.Embedding(len(char_index) + 1,
                             EMBEDDING_CHAR_DIM,
-                            input_length=MAX_SEQUENCE_LENGTH,
+                            input_length=MAX_WORD_LENGTH,
                             trainable=True)
     embed_char = embedding_char_layer(main_char_input)
     print(embedding_char_layer.output_shape)
+    embed_char = tf.keras.layers.Lambda(switch_layer)([main_char_input, embed_char])
+    print("embed_char.shape is:")
+    print(embed_char.shape)
+    print(embed_char[0].shape)
+    embed_char = tf.keras.layers.Lambda(backend_reshape_input)(embed_char)
+    print("embed_char.shape is:")
+    print(embed_char.shape)
+
+    #print(embed_char[0]._keras_mask)
 
     char_lstm_layer = tf.keras.layers.Bidirectional(
         tf.keras.layers.LSTM(
           LSTM_DIM,
-          input_shape=(MAX_SEQUENCE_LENGTH, EMBEDDING_CHAR_DIM),
+          input_shape=(MAX_WORD_LENGTH, EMBEDDING_CHAR_DIM),
           return_sequences=False,
           return_state=True),
         backward_layer = tf.keras.layers.LSTM(
           LSTM_DIM,
-          input_shape=(MAX_SEQUENCE_LENGTH, EMBEDDING_CHAR_DIM),
+          input_shape=(MAX_WORD_LENGTH, EMBEDDING_CHAR_DIM),
           return_sequences=False,
           go_backwards=True,
           return_state=True),
         name='Bi-LSTM_Char')
 
-    print(embed_char.shape)
-    print(embed_char[0].shape)
-
-    char_lstm_output, _, cell_1, _, cell_2 = char_lstm_layer(embed_char[0])
+    masking_layer = tf.keras.layers.Masking(mask_value=0., input_shape=(MAX_WORD_LENGTH, EMBEDDING_CHAR_DIM))
+    embed_char = masking_layer(embed_char)
+    print(embed_char._keras_mask)
+    char_lstm_output, _, cell_1, _, cell_2 = char_lstm_layer(embed_char)
     print(char_lstm_layer.output_shape)
     print(char_lstm_output.shape)
 
     char_lstm_output = tf.keras.layers.Lambda(backend_reshape)(char_lstm_output)
-
     cell_lstm_output = tf.keras.layers.concatenate([cell_1, cell_2], axis=-1)
     cell_lstm_output = tf.keras.layers.Lambda(backend_reshape)(cell_lstm_output)
+    char_lstm_output = tf.keras.layers.concatenate([char_lstm_output, cell_lstm_output], axis=-1)
+    char_lstm_output = tf.keras.layers.BatchNormalization()(char_lstm_output)
 
-    embed = tf.keras.layers.concatenate([embed, char_lstm_output, cell_lstm_output], axis=-1)
+    embed = tf.keras.layers.BatchNormalization()(embed)
+    embed = tf.keras.layers.concatenate([embed, char_lstm_output], axis=-1)
     embed = tf.keras.layers.Dropout(0.3)(embed)
 
     # 卷积核大小分别为2,3,4
@@ -323,7 +347,7 @@ def TextCNN_model_2(x_train, x_train_char, y_train, x_val, x_val_char, y_val, em
     cnn = tf.keras.layers.concatenate([cnn1, cnn2, cnn3], axis=-1)
     #cnn = tf.keras.layers.concatenate([cnn2, cnn3, cnn4], axis=-1)
     flat = tf.keras.layers.Flatten()(cnn)
-    drop = tf.keras.layers.Dropout(0.1)(flat)
+    drop = tf.keras.layers.Dropout(0.3)(flat)
     main_output = tf.keras.layers.Dense(1, activation='sigmoid', name='output-1')(drop)
     model = tf.keras.models.Model(inputs=[main_input, main_char_input], outputs=main_output)
 
@@ -338,8 +362,16 @@ def TextCNN_model_2(x_train, x_train_char, y_train, x_val, x_val_char, y_val, em
     weights = dict(enumerate(weights))
     print(weights)
     print(type(weights))
-    model.fit([x_train, x_train_char], y_train, validation_data=([x_val, x_val_char], y_val), epochs=10, batch_size=1, class_weight=weights)
-    model.save("model_result2/" + LANGUAGE_TYPE + "_textCNN/")
+
+    model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+      "model_result2_best/" + LANGUAGE_TYPE + "_textCNN/",
+      monitor = 'val_loss',
+      save_best_only = True,
+      save_weights_only = True)
+
+    model.fit([x_train, x_train_char], y_train, validation_data=([x_val, x_val_char], y_val), epochs=10, batch_size=1, class_weight=weights, callbacks=[model_checkpoint_callback])
+    model.save("model_result2/" + LANGUAGE_TYPE + "_textCNN/" + LANGUAGE_TYPE + ".h5", save_format="h5")
+    return model
 
 def TextCNN_model_3(x_train, y_train, x_val, y_val, embedding_matrix):
     main_input = tf.keras.layers.Input(shape=(MAX_SEQUENCE_LENGTH,), dtype='int32', name='input-1')
@@ -378,12 +410,12 @@ def TextCNN_model_3(x_train, y_train, x_val, y_val, embedding_matrix):
 if TASK_CLASS_NUMBER == 2:
     print(x_train.shape)
     print(tf.convert_to_tensor(x_train_char_sequences).shape)
-    TextCNN_model_2(x_train, tf.convert_to_tensor(x_train_char_sequences), y_train, x_test, tf.convert_to_tensor(x_test_char_sequences), y_test, embedding_matrix)
+    load_model = TextCNN_model_2(x_train, tf.convert_to_tensor(x_train_char_sequences), y_train, x_test, tf.convert_to_tensor(x_test_char_sequences), y_test, embedding_matrix)
 else:
     TextCNN_model_3(x_train, y_train, x_test, y_test, embedding_matrix)
 
 if TASK_CLASS_NUMBER == 2:
-    load_model = tf.keras.models.load_model("model_result2/" + LANGUAGE_TYPE + "_textCNN/")
+    load_model.load_weights("model_result2_best/" + LANGUAGE_TYPE + "_textCNN/")
     load_model.summary(line_length = 200, positions = [.22, .55, .67, 1.])
 else:
     load_model = tf.keras.models.load_model("model_result3/" + LANGUAGE_TYPE + "_textCNN/")
@@ -557,7 +589,7 @@ x_dcg = tf.keras.preprocessing.sequence.pad_sequences(x_dcg_sequences, maxlen=MA
 x_dcg_word_sequences = [text.split() for text in dcg_query]
 x_dcg_word_sequences = tf.keras.preprocessing.sequence.pad_sequences(x_dcg_word_sequences, dtype=object, maxlen=MAX_SEQUENCE_LENGTH, padding='pre', value='')
 x_dcg_char_sequences = [tokenizer_char.texts_to_sequences(word_seq) for word_seq in x_dcg_word_sequences]
-x_dcg_char_sequences = [tf.keras.preprocessing.sequence.pad_sequences(char_seq, maxlen=MAX_SEQUENCE_LENGTH, padding='pre') for char_seq in x_dcg_char_sequences]
+x_dcg_char_sequences = [tf.keras.preprocessing.sequence.pad_sequences(char_seq, maxlen=MAX_WORD_LENGTH, padding='pre') for char_seq in x_dcg_char_sequences]
 
 
 if TASK_CLASS_NUMBER == 2:
@@ -731,7 +763,7 @@ else:
 x_dcg_word_sequences = [text.split() for text in dcg_query]
 x_dcg_word_sequences = tf.keras.preprocessing.sequence.pad_sequences(x_dcg_word_sequences, dtype=object, maxlen=MAX_SEQUENCE_LENGTH, padding='pre', value='')
 x_dcg_char_sequences = [tokenizer_char.texts_to_sequences(word_seq) for word_seq in x_dcg_word_sequences]
-x_dcg_char_sequences = [tf.keras.preprocessing.sequence.pad_sequences(char_seq, maxlen=MAX_SEQUENCE_LENGTH, padding='pre') for char_seq in x_dcg_char_sequences]
+x_dcg_char_sequences = [tf.keras.preprocessing.sequence.pad_sequences(char_seq, maxlen=MAX_WORD_LENGTH, padding='pre') for char_seq in x_dcg_char_sequences]
 
 
 prob = load_model.predict([x_dcg, tf.convert_to_tensor(x_dcg_char_sequences)], batch_size=1)
@@ -829,6 +861,21 @@ if TASK_CLASS_NUMBER == 2:
     print(x_dcg_sequences[8])
     print(x_dcg[8])
     print(prob[8][0])
+
+    print(dcg_query[9])
+    print(x_dcg_sequences[9])
+    print(x_dcg[9])
+    print(prob[9][0])
+
+    print(dcg_query[10])
+    print(x_dcg_sequences[10])
+    print(x_dcg[10])
+    print(prob[10][0])
+
+    print(dcg_query[11])
+    print(x_dcg_sequences[11])
+    print(x_dcg[11])
+    print(prob[11][0])
 
     print("正样本个数:" + str(dcg_pos_number) + ", 预测正样本个数" + str(predict_pos_number) + ", 正确预测正样本个数:" + str(acc_pos_number) +
           ", 召回率:" + str(acc_pos_number/dcg_pos_number) + ", 准确率:" + str(acc_pos_number/predict_pos_number))

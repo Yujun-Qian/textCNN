@@ -318,6 +318,7 @@ def TextCNN_model_2(x_train, x_train_char, y_train, x_val, x_val_char, y_val, em
     masking_layer = tf.keras.layers.Masking(mask_value=0., input_shape=(MAX_WORD_LENGTH, EMBEDDING_CHAR_DIM))
     embed_char = masking_layer(embed_char)
     print(embed_char._keras_mask)
+    #embed_char = tf.keras.layers.LayerNormalization()(embed_char)
     char_lstm_output, _, cell_1, _, cell_2 = char_lstm_layer(embed_char)
     print(char_lstm_layer.output_shape)
     print(char_lstm_output.shape)
@@ -326,9 +327,7 @@ def TextCNN_model_2(x_train, x_train_char, y_train, x_val, x_val_char, y_val, em
     cell_lstm_output = tf.keras.layers.concatenate([cell_1, cell_2], axis=-1)
     cell_lstm_output = tf.keras.layers.Lambda(backend_reshape)(cell_lstm_output)
     char_lstm_output = tf.keras.layers.concatenate([char_lstm_output, cell_lstm_output], axis=-1)
-    char_lstm_output = tf.keras.layers.BatchNormalization()(char_lstm_output)
 
-    embed = tf.keras.layers.BatchNormalization()(embed)
     embed = tf.keras.layers.concatenate([embed, char_lstm_output], axis=-1)
     embed = tf.keras.layers.Dropout(0.3)(embed)
 
@@ -369,7 +368,7 @@ def TextCNN_model_2(x_train, x_train_char, y_train, x_val, x_val_char, y_val, em
       save_best_only = True,
       save_weights_only = True)
 
-    model.fit([x_train, x_train_char], y_train, validation_data=([x_val, x_val_char], y_val), epochs=10, batch_size=1, class_weight=weights, callbacks=[model_checkpoint_callback])
+    model.fit([x_train, x_train_char], y_train, validation_data=([x_val, x_val_char], y_val), epochs=20, batch_size=2, class_weight=weights, callbacks=[model_checkpoint_callback])
     model.save("model_result2/" + LANGUAGE_TYPE + "_textCNN/" + LANGUAGE_TYPE + ".h5", save_format="h5")
     return model
 
@@ -416,6 +415,7 @@ else:
 
 if TASK_CLASS_NUMBER == 2:
     load_model.load_weights("model_result2_best/" + LANGUAGE_TYPE + "_textCNN/")
+    #load_model = tf.keras.models.load_model("model_result2/" + LANGUAGE_TYPE + "_textCNN/" + LANGUAGE_TYPE + ".h5")
     load_model.summary(line_length = 200, positions = [.22, .55, .67, 1.])
 else:
     load_model = tf.keras.models.load_model("model_result3/" + LANGUAGE_TYPE + "_textCNN/")
@@ -783,7 +783,7 @@ if TASK_CLASS_NUMBER == 2:
     error_pos_input = []
     error_pos_score = []
     for i in range(0, len(prob)):
-        if prob[i][0] >= 0.5:
+        if prob[i][0] >= 0.4:
             predict_pos_number += 1
             if dcg_labels[i] == 1:
                 acc_pos_number += 1
@@ -876,6 +876,13 @@ if TASK_CLASS_NUMBER == 2:
     print(x_dcg_sequences[11])
     print(x_dcg[11])
     print(prob[11][0])
+
+    for i in range(12, 41):
+      print("====" + str(i) + "======")
+      print(dcg_query[i])
+      print(x_dcg_sequences[i])
+      print(x_dcg[i])
+      print(prob[i][0])
 
     print("正样本个数:" + str(dcg_pos_number) + ", 预测正样本个数" + str(predict_pos_number) + ", 正确预测正样本个数:" + str(acc_pos_number) +
           ", 召回率:" + str(acc_pos_number/dcg_pos_number) + ", 准确率:" + str(acc_pos_number/predict_pos_number))

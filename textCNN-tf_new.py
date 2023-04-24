@@ -6,7 +6,6 @@ import tensorflow as tf
 import numpy as np
 import random
 import math
-from imblearn.over_sampling import SMOTE
 from collections import Counter
 
 print(tf.config.list_physical_devices('GPU'))
@@ -23,7 +22,7 @@ LSTM_DIM = 25
 query_texts = []
 query_labels = []
 
-origin_train_data = "../data/query/model_data/{}/{}_train_binary.txt.full".format(LANGUAGE_TYPE, LANGUAGE_TYPE)
+origin_train_data = "model_result2_br_deploy/br_train_binary.txt.full.seg"
 if TASK_CLASS_NUMBER == 3:
     origin_train_data = "../data/query/model_data/{}/seg/{}_train_multi_seg.txt".format(LANGUAGE_TYPE, LANGUAGE_TYPE)
 with open(origin_train_data, "r") as file:
@@ -75,7 +74,7 @@ embeddings_index = {}
 
 has_word_index = len(word_index)
 
-embedding_files = '../data/embedding/' + LANGUAGE_TYPE + '_word2v.vec'
+embedding_files =  LANGUAGE_TYPE + '_word2v.vec'
 f = open(embedding_files)
 for line in f:
     values = line.split()
@@ -261,6 +260,12 @@ print(x_train[-10:-1])
 print(y_train[-10:-1])
 print(x_train_char_sequences[-2])
 
+def backend_reshape_restore_input(x):
+    return tf.keras.backend.reshape(x, (-1, MAX_SEQUENCE_LENGTH, EMBEDDING_DIM + LSTM_DIM * 4))
+
+def backend_reshape_reduce_input(x):
+    return tf.keras.backend.reshape(x, (-1, EMBEDDING_DIM))
+
 def backend_reshape_input(x):
     return tf.keras.backend.reshape(x, (-1, MAX_WORD_LENGTH, EMBEDDING_CHAR_DIM))
 
@@ -271,12 +276,12 @@ def switch_layer(inputs):
     inp, emb = inputs
     zeros = tf.zeros_like(inp, dtype = tf.float32)
     ones = tf.ones_like(inp, dtype = tf.float32)
-    inp = tf.keras.backend.switch(inp > 0, ones, zeros)
+    inp = tf.keras.backend.switch(tf.keras.backend.greater(inp, 0), ones, zeros)
     inp = tf.expand_dims(inp, -1)
     return inp * emb
 
 def TextCNN_model_2(x_train, x_train_char, y_train, x_val, x_val_char, y_val, embedding_matrix):
-    main_input = tf.keras.layers.Input(shape=(MAX_SEQUENCE_LENGTH,), dtype='int32', name='input-1')
+    main_input = tf.keras.layers.Input(shape=(MAX_SEQUENCE_LENGTH,), dtype='int32', name='input_1')
     embedding_layer = tf.keras.layers.Embedding(len(word_index) + 1,
                             EMBEDDING_DIM,
                             weights=[embedding_matrix],
@@ -284,14 +289,14 @@ def TextCNN_model_2(x_train, x_train_char, y_train, x_val, x_val_char, y_val, em
                             trainable=False)
     embed = embedding_layer(main_input)
 
-    main_char_input = tf.keras.layers.Input(shape=(MAX_SEQUENCE_LENGTH, MAX_WORD_LENGTH), dtype='int32', name='input-2')
+    main_char_input = tf.keras.layers.Input(shape=(MAX_SEQUENCE_LENGTH, MAX_WORD_LENGTH), dtype='int32', name='input_2')
     embedding_char_layer = tf.keras.layers.Embedding(len(char_index) + 1,
                             EMBEDDING_CHAR_DIM,
                             input_length=MAX_WORD_LENGTH,
                             trainable=True)
     embed_char = embedding_char_layer(main_char_input)
     print(embedding_char_layer.output_shape)
-    embed_char = tf.keras.layers.Lambda(switch_layer)([main_char_input, embed_char])
+    #embed_char = tf.keras.layers.Lambda(switch_layer)([main_char_input, embed_char])
     print("embed_char.shape is:")
     print(embed_char.shape)
     print(embed_char[0].shape)
@@ -315,20 +320,22 @@ def TextCNN_model_2(x_train, x_train_char, y_train, x_val, x_val_char, y_val, em
           return_state=True),
         name='Bi-LSTM_Char')
 
-    masking_layer = tf.keras.layers.Masking(mask_value=0., input_shape=(MAX_WORD_LENGTH, EMBEDDING_CHAR_DIM))
-    embed_char = masking_layer(embed_char)
-    print(embed_char._keras_mask)
+    #masking_layer = tf.keras.layers.Masking(mask_value=0., input_shape=(MAX_WORD_LENGTH, EMBEDDING_CHAR_DIM))
+    #embed_char = masking_layer(embed_char)
+    #print(embed_char._keras_mask)
     #embed_char = tf.keras.layers.LayerNormalization()(embed_char)
     char_lstm_output, _, cell_1, _, cell_2 = char_lstm_layer(embed_char)
     print(char_lstm_layer.output_shape)
     print(char_lstm_output.shape)
 
-    char_lstm_output = tf.keras.layers.Lambda(backend_reshape)(char_lstm_output)
     cell_lstm_output = tf.keras.layers.concatenate([cell_1, cell_2], axis=-1)
-    cell_lstm_output = tf.keras.layers.Lambda(backend_reshape)(cell_lstm_output)
     char_lstm_output = tf.keras.layers.concatenate([char_lstm_output, cell_lstm_output], axis=-1)
-
+    embed = tf.keras.layers.Lambda(backend_reshape_reduce_input)(embed)
     embed = tf.keras.layers.concatenate([embed, char_lstm_output], axis=-1)
+    embed = tf.keras.layers.Lambda(backend_reshape_restore_input)(embed)
+    print("embed shape is:")
+    print(embed.shape)
+
     embed = tf.keras.layers.Dropout(0.3)(embed)
 
     # 卷积核大小分别为2,3,4
@@ -347,20 +354,20 @@ def TextCNN_model_2(x_train, x_train_char, y_train, x_val, x_val_char, y_val, em
     #cnn = tf.keras.layers.concatenate([cnn2, cnn3, cnn4], axis=-1)
     flat = tf.keras.layers.Flatten()(cnn)
     drop = tf.keras.layers.Dropout(0.3)(flat)
-    main_output = tf.keras.layers.Dense(1, activation='sigmoid', name='output-1')(drop)
+    main_output = tf.keras.layers.Dense(1, activation='sigmoid', name='output_1')(drop)
     model = tf.keras.models.Model(inputs=[main_input, main_char_input], outputs=main_output)
 
 
 
     model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
 
-    weights = class_weight.compute_class_weight('balanced', np.unique(y_train), y_train)
-    print(weights)
-    print(type(weights))
+    #weights = class_weight.compute_class_weight('balanced', np.unique(y_train), y_train)
+    #print(weights)
+    #print(type(weights))
     #weights = [0.5, 5]
-    weights = dict(enumerate(weights))
-    print(weights)
-    print(type(weights))
+    #weights = dict(enumerate(weights))
+    #print(weights)
+    #print(type(weights))
 
     model_checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
       "model_result2_best/" + LANGUAGE_TYPE + "_textCNN/",
@@ -368,12 +375,13 @@ def TextCNN_model_2(x_train, x_train_char, y_train, x_val, x_val_char, y_val, em
       save_best_only = True,
       save_weights_only = True)
 
-    model.fit([x_train, x_train_char], y_train, validation_data=([x_val, x_val_char], y_val), epochs=20, batch_size=2, class_weight=weights, callbacks=[model_checkpoint_callback])
-    model.save("model_result2/" + LANGUAGE_TYPE + "_textCNN/" + LANGUAGE_TYPE + ".h5", save_format="h5")
+    #model.fit([x_train, x_train_char], y_train, validation_data=([x_val, x_val_char], y_val), epochs=10, batch_size=1, class_weight=weights, callbacks=[model_checkpoint_callback])
+    model.fit([x_train, x_train_char], y_train, validation_data=([x_val, x_val_char], y_val), epochs=10, batch_size=8, callbacks=[model_checkpoint_callback])
+    model.save("model_result2/" + LANGUAGE_TYPE + "_textCNN/")
     return model
 
 def TextCNN_model_3(x_train, y_train, x_val, y_val, embedding_matrix):
-    main_input = tf.keras.layers.Input(shape=(MAX_SEQUENCE_LENGTH,), dtype='int32', name='input-1')
+    main_input = tf.keras.layers.Input(shape=(MAX_SEQUENCE_LENGTH,), dtype='int32', name='input_1')
     embedding_layer = tf.keras.layers.Embedding(len(word_index) + 1,
                             EMBEDDING_DIM,
                             weights=[embedding_matrix],
@@ -398,7 +406,7 @@ def TextCNN_model_3(x_train, y_train, x_val, y_val, embedding_matrix):
     #cnn = tf.keras.layers.concatenate([cnn2, cnn3, cnn4], axis=-1)
     flat = tf.keras.layers.Flatten()(cnn)
     drop = tf.keras.layers.Dropout(0.5)(flat)
-    main_output = tf.keras.layers.Dense(3, activation='softmax', name='output-1')(drop)
+    main_output = tf.keras.layers.Dense(3, activation='softmax', name='output_1')(drop)
     model = tf.keras.models.Model(inputs=main_input, outputs=main_output)
     model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
 
@@ -438,7 +446,7 @@ if TASK_CLASS_NUMBER == 3:
 #x_test =x_train
 #y_test = y_train
 
-prob = load_model.predict([x_test, tf.convert_to_tensor(x_test_char_sequences)], batch_size = 1)
+prob = load_model.predict([x_test, tf.convert_to_tensor(x_test_char_sequences)])
 
 if TASK_CLASS_NUMBER == 2:
     acc_number = 0
@@ -548,7 +556,7 @@ dcg_query = []
 dcg_labels = []
 
 if TASK_CLASS_NUMBER == 2:
-    f = open("../data/query/model_data/{}/{}_val_binary.txt".format(LANGUAGE_TYPE, LANGUAGE_TYPE))
+    f = open("{}_val_binary.txt".format(LANGUAGE_TYPE))
 else:
     f = open("../data/query/model_data/{}/seg/{}_val_multi_seg.txt".format(LANGUAGE_TYPE, LANGUAGE_TYPE))
 
@@ -597,7 +605,7 @@ if TASK_CLASS_NUMBER == 2:
 else:
     y_dcg = tf.keras.utils.to_categorical(dcg_labels)
 
-prob = load_model.predict([x_dcg, tf.convert_to_tensor(x_dcg_char_sequences)], batch_size = 1)
+prob = load_model.predict([x_dcg, tf.convert_to_tensor(x_dcg_char_sequences)])
 
 
 if TASK_CLASS_NUMBER == 2:
@@ -716,7 +724,7 @@ dcg_query = []
 dcg_labels = []
 
 if TASK_CLASS_NUMBER == 2:
-    f = open("../data/query/model_data/{}/seg/{}_random_query_seg.txt".format(LANGUAGE_TYPE, LANGUAGE_TYPE))
+    f = open("{}_random_query_seg.txt".format(LANGUAGE_TYPE))
 else:
     f = open("../data/query/model_data/{}/seg/{}_val_multi_seg.txt".format(LANGUAGE_TYPE, LANGUAGE_TYPE))
 
@@ -766,7 +774,7 @@ x_dcg_char_sequences = [tokenizer_char.texts_to_sequences(word_seq) for word_seq
 x_dcg_char_sequences = [tf.keras.preprocessing.sequence.pad_sequences(char_seq, maxlen=MAX_WORD_LENGTH, padding='pre') for char_seq in x_dcg_char_sequences]
 
 
-prob = load_model.predict([x_dcg, tf.convert_to_tensor(x_dcg_char_sequences)], batch_size=1)
+prob = load_model.predict([x_dcg, tf.convert_to_tensor(x_dcg_char_sequences)])
 
 print("x_dcg type {}".format(type(x_dcg)))
 print(x_dcg[0])
@@ -883,6 +891,13 @@ if TASK_CLASS_NUMBER == 2:
       print(x_dcg_sequences[i])
       print(x_dcg[i])
       print(prob[i][0])
+
+    print(dcg_query[40])
+    print(x_dcg_sequences[40])
+    print(x_dcg_char_sequences[40])
+    print(x_dcg[40])
+    print(prob[40][0])
+
 
     print("正样本个数:" + str(dcg_pos_number) + ", 预测正样本个数" + str(predict_pos_number) + ", 正确预测正样本个数:" + str(acc_pos_number) +
           ", 召回率:" + str(acc_pos_number/dcg_pos_number) + ", 准确率:" + str(acc_pos_number/predict_pos_number))
